@@ -117,7 +117,8 @@ public class IdeaController {
 
 	@Operation(
 		summary = "아이디어 삭제",
-		description = "특정 아이디어를 소프트 삭제합니다. 블록체인에 등록된 데이터는 삭제되지 않습니다."
+		description = "아이디어를 삭제하고 파일 원본(S3)·fileHash·salt·서명을 파기합니다. "
+			+ "블록체인의 commit 은 지울 수 없지만, 파기 후에는 commit 만으로 원본이나 사용자를 연결할 수 없습니다."
 	)
 	@DeleteMapping("/{ideaId}")
 	public ResponseEntity<ApiResponse<Void>> deleteIdea(
@@ -141,5 +142,32 @@ public class IdeaController {
 	) {
 		IdeaCertificateResponse response = ideaService.getCertificateData(user, ideaId);
 		return ResponseEntity.ok(ApiResponse.success(response));
+	}
+
+	@Operation(
+		summary = "블록체인 등록 재시도",
+		description = "등록에 실패(FAILED)한 파일을 다시 등록 요청합니다. 이미 체인에 있는 경우 중복 기록되지 않고 등록 완료로 정정됩니다."
+	)
+	@PostMapping("/{ideaId}/files/{ideaFileId}/retry")
+	public ResponseEntity<ApiResponse<FileRegistrationResult>> retryRegistration(
+		@Parameter(hidden = true) @ValidatedUser User user,
+		@PathVariable("ideaId") Long ideaId,
+		@PathVariable("ideaFileId") Long ideaFileId
+	) {
+		return ResponseEntity.ok(ApiResponse.success(ideaService.retryRegistration(user, ideaId, ideaFileId)));
+	}
+
+	@Operation(
+		summary = "독립 검증용 증명 자료(proof.json) 조회",
+		description = "파일 원본과 함께 사용하면 iDear 서버 없이도 해시·commit·서명·온체인 기록을 검증할 수 있는 자료입니다. "
+			+ "salt 와 서명 원문이 포함되므로 본인만 조회할 수 있습니다."
+	)
+	@GetMapping("/{ideaId}/files/{ideaFileId}/proof")
+	public ResponseEntity<ApiResponse<IdeaProofResponse>> getProof(
+		@Parameter(hidden = true) @ValidatedUser User user,
+		@PathVariable("ideaId") Long ideaId,
+		@PathVariable("ideaFileId") Long ideaFileId
+	) {
+		return ResponseEntity.ok(ApiResponse.success(ideaService.getProof(user, ideaId, ideaFileId)));
 	}
 }

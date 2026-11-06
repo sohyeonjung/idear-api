@@ -14,8 +14,13 @@ public class EmbeddedRedisConfig {
 
     @PostConstruct
     public void startRedis() throws IOException {
-        redisServer = new RedisServer(6379);
-        redisServer.start();
+        // 테스트 컨텍스트가 여러 개(@MockitoBean 등)일 때 이미 떠 있는 서버를 재사용한다.
+        try {
+            redisServer = new RedisServer(6379);
+            redisServer.start();
+        } catch (Exception alreadyRunning) {
+            redisServer = null;
+        }
     }
 
     @PreDestroy

@@ -54,6 +54,11 @@ public enum ErrorCode {
     // Blockchain
     REGISTRATION_STATUS_NOT_VALID(HttpStatus.BAD_REQUEST, "B001", "유효하지 않은 status 입니다."),
     REGISTRATION_FAILURE_REASON_NOT_VALID(HttpStatus.BAD_REQUEST, "B002", "유효하지 않은 reason 입니다."),
+    PUBLIC_KEY_NOT_REGISTERED(HttpStatus.BAD_REQUEST, "B003", "전자서명용 공개키가 등록되지 않았습니다."),
+    INVALID_PUBLIC_KEY(HttpStatus.BAD_REQUEST, "B004", "유효하지 않은 공개키입니다. (ECDSA P-256 SPKI Base64 필요)"),
+    INVALID_USER_SIGNATURE(HttpStatus.BAD_REQUEST, "B005", "사용자 전자서명 검증에 실패했습니다."),
+    REGISTRATION_NOT_RETRYABLE(HttpStatus.CONFLICT, "B006", "재시도할 수 없는 등록 상태입니다."),
+    PROOF_NOT_AVAILABLE(HttpStatus.CONFLICT, "B007", "블록체인 등록이 완료된 파일만 증명 자료를 발급할 수 있습니다."),
 
     // Certificate
     CERTIFICATE_GENERATION_FAILED(HttpStatus.INTERNAL_SERVER_ERROR, "CT001", "증명서 생성에 실패했습니다."),

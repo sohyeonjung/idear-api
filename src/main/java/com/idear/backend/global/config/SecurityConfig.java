@@ -44,6 +44,7 @@ public class SecurityConfig {
 
     private final String[] PUBLIC_GET = {
             "/",
+            "/blockchain/server-public-key",
             "/test/**",
 
             // OAuth2
