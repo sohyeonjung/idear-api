@@ -63,6 +63,22 @@ blockchain:
     private-key: ${SERVER_PRIVATE_KEY}
   contract:
     address: ${BLOCKCHAIN_CONTRACT_ADDRESS}
+  signature:
+    verification-enabled: true        # 사용자 전자서명 서버 검증
+  scheduler:
+    enabled: true                     # Outbox 릴레이 + 대사 배치
+  outbox:
+    relay-interval-ms: 2000
+    batch-size: 20
+    max-attempts: 5                   # 초과 시 DEAD(Dead Letter) + FAILED(gateway_unreachable)
+    base-backoff-ms: 2000             # 2s, 4s, 8s ... 지수 백오프
+    max-backoff-ms: 300000
+  reconciliation:
+    interval-ms: 60000
+    grace-seconds: 120                # 정상 경로(웹훅)에 먼저 기회를 주는 시간
+    stuck-threshold-seconds: 600      # 이 시간 동안 체인에 없으면 재전송
+    max-dispatch: 3                   # 재전송 포함 최대 전송 횟수, 초과 시 FAILED(reconciliation_timeout)
+    failed-lookback-hours: 24         # FAILED 건도 이 기간 동안은 체인을 재확인
 
 user:
   profile:

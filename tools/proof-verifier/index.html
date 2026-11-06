@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>iDear 독립 검증 도구</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Malgun Gothic", sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; color: #1a1a1a; line-height: 1.6; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.lead { color: #555; margin-top: 0; }
+  label { display: block; font-weight: 600; margin-top: 18px; }
+  input[type=text] { width: 100%; padding: 8px; box-sizing: border-box; font-family: monospace; }
+  small { color: #666; font-weight: 400; }
+  button { margin-top: 22px; padding: 10px 20px; font-size: 15px; cursor: pointer; }
+  ul#out { list-style: none; padding: 0; margin-top: 24px; }
+  ul#out li { padding: 8px 10px; border-left: 4px solid #ccc; margin-bottom: 6px; background: #fafafa; word-break: break-all; }
+  li.pass { border-color: #1a7f37 !important; } li.fail { border-color: #cf222e !important; background: #fff5f5 !important; }
+  .detail { display: block; font-family: monospace; font-size: 12px; color: #555; }
+  #summary { font-weight: 700; margin-top: 12px; }
+</style>
+</head>
+<body>
+<h1>iDear 독립 검증 도구</h1>
+<p class="lead">iDear 서버 없이 <b>원본 파일 + proof.json</b>만으로 등록 사실을 검증합니다. 모든 계산은 이 브라우저 안에서만 이루어지고 파일은 어디에도 업로드되지 않습니다.</p>
+
+<label>1. 원본 파일 <input type="file" id="file"></label>
+<label>2. proof.json <small>(GET /ideas/{ideaId}/files/{fileId}/proof 응답)</small> <input type="file" id="proof" accept=".json"></label>
+<label>3. Ethereum RPC URL <small>(선택: 입력하면 Sepolia 컨트랙트를 직접 조회합니다. 예: 공개 Sepolia RPC 또는 본인 Infura/Alchemy URL)</small>
+  <input type="text" id="rpc" placeholder="https://...">
+</label>
+<button id="run">검증하기</button>
+<div id="summary"></div>
+<ul id="out"></ul>
+
+<!-- 체인 조회(선택)에만 사용. 해시·서명 검증은 브라우저 WebCrypto 로 수행 -->
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<script type="module">
+import { verifyProof } from './verifier-core.js';
+
+const ABI = ['function getCommit(bytes32) view returns (tuple(bytes32 commit,uint256 timestamp,bytes userSignature,bytes serverSignature,uint256 blockNumber,uint256 registeredAt,bool exists))'];
+
+async function readChain(rpc, proof) {
+  const provider = new ethers.JsonRpcProvider(rpc);
+  const net = await provider.getNetwork();
+  if (proof.chainId && Number(net.chainId) !== Number(proof.chainId)) {
+    throw new Error(`체인 ID 불일치: RPC=${net.chainId}, proof=${proof.chainId}`);
+  }
+  const c = new ethers.Contract(proof.contractAddress, ABI, provider);
+  try {
+    const r = await c.getCommit(proof.commit);
+    return { exists: r.exists, timestamp: r.timestamp.toString(), userSignature: r.userSignature,
+             serverSignature: r.serverSignature, blockNumber: r.blockNumber.toString(), registeredAt: r.registeredAt.toString() };
+  } catch (e) {
+    return { exists: false };
+  }
+}
+
+document.getElementById('run').addEventListener('click', async () => {
+  const out = document.getElementById('out');
+  const summary = document.getElementById('summary');
+  out.innerHTML = ''; summary.textContent = '검증 중...';
+  try {
+    const f = document.getElementById('file').files[0];
+    const pf = document.getElementById('proof').files[0];
+    if (!f || !pf) throw new Error('파일과 proof.json 을 모두 선택하세요');
+    const raw = JSON.parse(await pf.text());
+    const proof = raw.data ?? raw;
+    const rpc = document.getElementById('rpc').value.trim();
+    const chain = rpc ? await readChain(rpc, proof) : null;
+    const results = await verifyProof(new Uint8Array(await f.arrayBuffer()), proof, chain);
+    let failed = 0;
+    for (const r of results) {
+      const li = document.createElement('li');
+      li.className = r.ok === null ? '' : r.ok ? 'pass' : 'fail';
+      if (r.ok === false) failed++;
+      li.textContent = `${r.ok === null ? '⏭' : r.ok ? '✅' : '❌'} ${r.name}`;
+      if (r.detail) { const d = document.createElement('span'); d.className = 'detail'; d.textContent = r.detail; li.appendChild(d); }
+      out.appendChild(li);
+    }
+    summary.textContent = failed === 0 ? '검증 성공' : `검증 실패 ${failed}건`;
+  } catch (e) {
+    summary.textContent = '오류: ' + e.message;
+  }
+});
+</script>
+</body>
+</html>

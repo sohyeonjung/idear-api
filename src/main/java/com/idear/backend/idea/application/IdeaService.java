@@ -1,6 +1,8 @@
 package com.idear.backend.idea.application;
 
-import com.idear.backend.blockchain.application.BlockchainService;
+import com.idear.backend.blockchain.application.BlockchainOutboxService;
+import com.idear.backend.blockchain.crypto.EcdsaSignatureVerifier;
+import com.idear.backend.blockchain.crypto.ProofPayloads;
 import com.idear.backend.contest.domain.Contest;
 import com.idear.backend.contest.repository.ContestRepository;
 import com.idear.backend.global.exception.CustomException;
@@ -39,19 +41,27 @@ import java.util.*;
 public class IdeaService {
 
 	private static final String BLOCKCHAIN_NETWORK = "Sepolia";
+	private static final long SEPOLIA_CHAIN_ID = 11155111L;
+	private static final int PROOF_VERSION = 2;
 
 	private final IdeaRepository ideaRepository;
 	private final IdeaVersionRepository ideaVersionRepository;
 	private final IdeaFileRepository ideaFileRepository;
 	private final IdeaImageRepository ideaImageRepository;
 	private final FileStorageService fileStorageService;
-	private final BlockchainService blockchainService;
+	private final BlockchainOutboxService blockchainOutboxService;
+	private final EcdsaSignatureVerifier signatureVerifier;
+	private final IdeaPurgeService ideaPurgeService;
 	private final ContestRepository contestRepository;
 	private final HashUtil hashUtil;
 	private final ServerSignatureService serverSignatureService;
 
 	@Value("${blockchain.contract.address}")
 	private String contractAddress;
+
+	/** 운영 중 프론트 서명 형식 문제가 생기면 끌 수 있도록 플래그로 둔다 (기본: 켜짐) */
+	@Value("${blockchain.signature.verification-enabled:true}")
+	private boolean signatureVerificationEnabled = true;
 
 	@Transactional
 	public IdeaRegistrationInitResponse initIdeaRegistration(
@@ -110,6 +120,11 @@ public class IdeaService {
 			throw CustomException.of(ErrorCode.USER_NOT_OWNER);
 		}
 
+		String signerPublicKey = user.getPublicKey();
+		if (signatureVerificationEnabled && (signerPublicKey == null || signerPublicKey.isBlank())) {
+			throw CustomException.of(ErrorCode.PUBLIC_KEY_NOT_REGISTERED);
+		}
+
 		List<FileRegistrationResult> registrationResults = new ArrayList<>();
 
 		for (SignatureData signatureData : request.getSignatures()) {
@@ -125,20 +140,32 @@ public class IdeaService {
 
 			String userSignature = normalizeSignature(signatureData.getUserSignature());
 
+			// 1) 사용자 서명 검증: 등록된 공개키로 "fileHash|timestamp" 에 대한 서명인지 확인
+			if (signatureVerificationEnabled) {
+				String message = ProofPayloads.userMessage(ideaFile.getFileHash(), ideaFile.getRequestedTimestamp());
+				if (!signatureVerifier.verify(signerPublicKey, message, userSignature)) {
+					throw CustomException.of(ErrorCode.INVALID_USER_SIGNATURE);
+				}
+			}
+
+			// 2) 서버 서명: 검증을 통과한 요청이라는 서버 측 보증
 			String serverSignature = serverSignatureService.generateServerSignature(
 					ideaFile.getCommit(),
 					ideaFile.getRequestedTimestamp(),
 					userSignature
 			);
 
-			ideaFile.submitUserSignature(userSignature, serverSignature);
-
-			blockchainService.requestCommitRegistration(
-					ideaFile.getCommit(),
-					ideaFile.getRequestedTimestamp(),
+			// 3) 온체인에는 사용자 서명 원문이 아닌 다이제스트를 기록 (파일-사용자 연결 차단)
+			ideaFile.submitUserSignature(
 					userSignature,
-					serverSignature
+					serverSignature,
+					signerPublicKey,
+					ProofPayloads.onChainUserSignatureDigest(userSignature),
+					PROOF_VERSION
 			);
+
+			// 4) 게이트웨이 호출 대신 Outbox 기록. 같은 트랜잭션으로 커밋된 뒤 릴레이가 전송한다.
+			blockchainOutboxService.enqueue(ideaFile);
 
 			registrationResults.add(FileRegistrationResult.of(ideaFile));
 		}
@@ -267,7 +294,54 @@ public class IdeaService {
 			throw CustomException.of(ErrorCode.ACCESS_DENIED);
 		}
 
-		ideaRepository.delete(idea);
+		ideaPurgeService.purgeIdea(idea);
+	}
+
+	/**
+	 * 실패한 등록을 다시 시도한다 (FAILED → BLOCKCHAIN_PENDING, Outbox 재적재).
+	 * 같은 commit 을 다시 보내므로 체인에 이미 있으면 게이트웨이/컨트랙트가 중복 등록을 막고,
+	 * 웹훅·대사 배치가 체인 상태를 보고 REGISTERED 로 맞춘다.
+	 */
+	@Transactional
+	public FileRegistrationResult retryRegistration(User user, Long ideaId, Long ideaFileId) {
+		IdeaFile ideaFile = findOwnedFile(user, ideaId, ideaFileId);
+		ideaFile.retryRegistration();
+		blockchainOutboxService.enqueue(ideaFile);
+		return FileRegistrationResult.of(ideaFile);
+	}
+
+	/**
+	 * 서버 없이도 검증할 수 있는 증명 자료(proof.json).
+	 * 파일 원본 + 이 자료만 있으면 tools/proof-verifier 로 해시·commit·서명·온체인 기록을 직접 확인할 수 있다.
+	 */
+	@Transactional(readOnly = true)
+	public IdeaProofResponse getProof(User user, Long ideaId, Long ideaFileId) {
+		IdeaFile ideaFile = findOwnedFile(user, ideaId, ideaFileId);
+		if (ideaFile.getRegisterStatus() != IdeaFile.RegisterStatus.REGISTERED) {
+			throw CustomException.of(ErrorCode.PROOF_NOT_AVAILABLE);
+		}
+		return IdeaProofResponse.of(
+				ideaFile,
+				BLOCKCHAIN_NETWORK,
+				SEPOLIA_CHAIN_ID,
+				contractAddress,
+				serverSignatureService.getServerPublicKey()
+		);
+	}
+
+	private IdeaFile findOwnedFile(User user, Long ideaId, Long ideaFileId) {
+		Idea idea = ideaRepository.findById(ideaId)
+				.orElseThrow(() -> CustomException.of(ErrorCode.IDEA_NOT_FOUND));
+		if (!idea.getUser().getUserId().equals(user.getUserId())) {
+			throw CustomException.of(ErrorCode.ACCESS_DENIED);
+		}
+		IdeaFile ideaFile = ideaFileRepository.findById(ideaFileId)
+				.orElseThrow(() -> CustomException.of(ErrorCode.IDEA_FILE_NOT_FOUND));
+		boolean owned = idea.getVersions().stream().anyMatch(v -> v.getFiles().contains(ideaFile));
+		if (!owned) {
+			throw CustomException.of(ErrorCode.IDEA_FILE_IDEA_MISMATCH);
+		}
+		return ideaFile;
 	}
 
 	@Transactional(readOnly = true)

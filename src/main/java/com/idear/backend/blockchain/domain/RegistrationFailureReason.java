@@ -13,7 +13,11 @@ public enum RegistrationFailureReason {
     ALREADY_REGISTERED("already_registered"),
     SUBMISSION_FAILED("submission_failed"),
     NETWORK_ERROR("network_error"),
-    RPC_RATE_LIMIT("rpc_rate_limit");
+    RPC_RATE_LIMIT("rpc_rate_limit"),
+    // API 서버 대사 배치가 판단한 실패: 여러 번 재전송했지만 체인에서 끝내 확인되지 않음
+    RECONCILIATION_TIMEOUT("reconciliation_timeout"),
+    // 게이트웨이 전송 자체가 최대 재시도 후에도 실패
+    GATEWAY_UNREACHABLE("gateway_unreachable");
 
     @JsonValue
     private final String reason;

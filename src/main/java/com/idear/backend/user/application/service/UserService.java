@@ -1,6 +1,10 @@
 package com.idear.backend.user.application.service;
 
+import com.idear.backend.blockchain.crypto.EcdsaSignatureVerifier;
 import com.idear.backend.email.service.EmailService;
+import com.idear.backend.idea.application.IdeaPurgeService;
+import com.idear.backend.user.domain.UserPublicKey;
+import com.idear.backend.user.infrastructure.repository.UserPublicKeyRepository;
 import com.idear.backend.global.config.UserProperties;
 import com.idear.backend.global.exception.CustomException;
 import com.idear.backend.global.exception.ErrorCode;
@@ -30,6 +34,9 @@ public class UserService {
     private final FileStorageService fileStorageService;
     private final RedisTemplate<String, Object> redisTemplate;
     private final UserProperties userProperties;
+    private final UserPublicKeyRepository userPublicKeyRepository;
+    private final EcdsaSignatureVerifier ecdsaSignatureVerifier;
+    private final IdeaPurgeService ideaPurgeService;
     private final SecureRandom secureRandom = new SecureRandom();
 
     private static final String EMAIL_VERIFICATION_PREFIX = "email:verification:";
@@ -45,13 +52,31 @@ public class UserService {
         user.updateUsername(name);
     }
 
+    /**
+     * 공개키 등록. 기존 키는 덮어쓰지 않고 폐기(revoke) 처리해 이력으로 남긴다.
+     * 과거에 등록된 파일은 IdeaFile.signerPublicKey 에 서명 당시 키가 저장되어 있어 계속 검증 가능하다.
+     */
     @Transactional
     public void registerPublicKey(User user, String publicKey) {
+        try {
+            ecdsaSignatureVerifier.parsePublicKey(publicKey);
+        } catch (IllegalArgumentException e) {
+            throw CustomException.of(ErrorCode.INVALID_PUBLIC_KEY);
+        }
+
+        userPublicKeyRepository.findAllByUserAndRevokedAtIsNull(user)
+                .forEach(UserPublicKey::revoke);
+        userPublicKeyRepository.save(UserPublicKey.of(user, publicKey));
         user.registerPublicKey(publicKey);
     }
 
     @Transactional
     public void deleteUser(User user) {
+        // 탈퇴 시 사용자의 아이디어 파일 증빙 데이터(salt·서명·원본)를 파기해
+        // 온체인 commit과 정보주체 간 연결 가능성을 최소화한다.
+        ideaPurgeService.purgeAllIdeasOf(user);
+        userPublicKeyRepository.findAllByUserAndRevokedAtIsNull(user)
+                .forEach(UserPublicKey::revoke);
         user.deleteUser();
     }
 
